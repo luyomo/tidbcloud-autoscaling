@@ -9,6 +9,7 @@ import (
     "github.com/prometheus/client_golang/api"
     "github.com/prometheus/common/model"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
+    "github.com/luyomo/tidbcloud-sdk-go-v1/pkg/tidbcloud"
 )
 
 func main() {
@@ -20,6 +21,12 @@ func main() {
 		os.Exit(1)
 	}
 
+
+    if err := scalingTiDBOut(3, 1); err != nil {
+        panic(err)
+    }
+
+    return
 
     ticker := time.NewTicker(time.Minute)
     for {
@@ -52,4 +59,147 @@ func main() {
                }
        }
     }
+}
+
+func scalingTiDBOut(maxNodes, scales int32) error {
+    // Fetch TiDB Info using API
+    numTiDBNodes, err := getTiDBNumNodes()
+    if err != nil {
+        return err
+    }
+    fmt.Printf("The current nodes are : %d \n", numTiDBNodes)
+
+    // If the current number nodes exceed the maxNodes, finish
+    if int32(numTiDBNodes) < maxNodes {
+        fmt.Printf("Starting to add one new node \n")
+        
+        if err := scaleTidb(int32(numTiDBNodes)+scales); err != nil {
+            return err
+        }
+    }
+    
+    // If the current number nodes is less then maxNodes, add min(scales, maxNodes - currentNodes)
+
+    return nil
+}
+
+func getTiDBNumNodes() (int, error) {
+    resp, err := getCluster()
+    if err != nil {
+        return 0, err
+    }
+
+    fmt.Printf("The nodes: <%#v> \n", len(resp.JSON200.Status.NodeMap.Tidb) )
+
+    return len(resp.JSON200.Status.NodeMap.Tidb), nil
+}
+
+func getCluster() (*tidbcloud.GetClusterResponse, error) {
+
+    projectID := os.Getenv("TIDBCLOUD_PROJECT_ID")
+    if projectID == "" {
+        panic("No project id is specified")
+    }
+
+    clusterName := os.Getenv("TIDBCLOUD_CLUSTER_NAME")
+    if clusterName == "" {
+        panic("No project id is specified")
+    }
+
+    client, err := tidbcloud.NewDigestClientWithResponses()
+    if err != nil {
+        panic(err)
+    }
+
+    response, err := client.ListClustersOfProjectWithResponse(context.Background(), projectID,  &tidbcloud.ListClustersOfProjectParams{})
+    if err != nil {
+        panic(err)
+    }
+
+    for _, item := range response.JSON200.Items {
+        if *item.Name == clusterName && (*item.Status.ClusterStatus).(string) == "AVAILABLE" {
+            getClusterRes, err := client.GetClusterWithResponse(context.Background(), projectID, item.Id )
+            if err != nil {
+                panic(err)
+            }
+            fmt.Printf("Response: <%#v>", len(getClusterRes.JSON200.Status.NodeMap.Tidb) )
+            return getClusterRes, nil
+        }
+    }
+
+    return nil, nil
+}
+
+func scaleTidb(numNodes int32) error {
+
+    projectID := os.Getenv("TIDBCLOUD_PROJECT_ID")
+    if projectID == "" {
+        panic("No project id is specified")
+    }
+
+    clusterName := os.Getenv("TIDBCLOUD_CLUSTER_NAME")
+    if clusterName == "" {
+        panic("No project id is specified")
+    }
+
+    client, err := tidbcloud.NewDigestClientWithResponses()
+    if err != nil {
+        panic(err)
+    }
+
+    response, err := client.ListClustersOfProjectWithResponse(context.Background(), projectID,  &tidbcloud.ListClustersOfProjectParams{})
+    if err != nil {
+        panic(err)
+    }
+
+    for _, item := range response.JSON200.Items {
+        if *item.Name == clusterName && (*item.Status.ClusterStatus).(string) == "AVAILABLE" {
+            fmt.Printf("The cluster id: %s", item.Id)
+
+            updateClusterJSONRequestBody := tidbcloud.UpdateClusterJSONRequestBody{}
+
+            updateClusterJSONRequestBody.Config.Components = &struct{
+                Tidb *struct {
+                    NodeQuantity *int32 `json:"node_quantity,omitempty"`
+                    NodeSize *string `json:"node_size,omitempty"`
+                } `json:"tidb,omitempty"`
+                Tiflash *struct {
+                    NodeQuantity *int32 `json:"node_quantity,omitempty"`
+                    NodeSize *string `json:"node_size,omitempty"`
+                    StorageSizeGib *int32 `json:"storage_size_gib,omitempty"`
+                } `json:"tiflash,omitempty"`
+                Tikv *struct {
+                    NodeQuantity *int32 `json:"node_quantity,omitempty"`
+                    NodeSize *string `json:"node_size,omitempty"`
+                    StorageSizeGib *int32 `json:"storage_size_gib,omitempty"`
+                } `json:"tikv,omitempty"`
+            }{
+                &struct {
+                    NodeQuantity *int32 `json:"node_quantity,omitempty"`
+                    NodeSize *string `json:"node_size,omitempty"`
+                }{ &numNodes, nil } ,
+                nil,
+                nil,
+            }
+
+            response, err := client.UpdateClusterWithResponse(context.Background(), projectID, item.Id, updateClusterJSONRequestBody)
+            if err != nil {
+                panic(err)
+            }
+
+            statusCode := response.StatusCode()
+            fmt.Printf("Sgtatus code: %s \n", statusCode)
+
+
+
+            // getClusterRes, err := client.GetClusterWithResponse(context.Background(), projectID, item.Id )
+            // if err != nil {
+            //     panic(err)
+            // }
+            // fmt.Printf("Response: <%#v>", len(getClusterRes.JSON200.Status.NodeMap.Tidb) )
+            // return getClusterRes, nil
+        }
+    }
+
+    return nil
 }
